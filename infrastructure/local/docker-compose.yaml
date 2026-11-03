@@ -1,0 +1,63 @@
+services:
+  # Kafka (production-grade Apache Kafka distribution)
+  kafka:
+    image: apache/kafka:4.2.2
+    container_name: library-kafka-broker
+    ports:
+      - "9092:9092"
+      - "8082:8082"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_MS: "604800000"
+    networks:
+      - kafka-network
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # PostgreSQL (outbox + processed events storage)
+  postgres:
+    image: postgres:16-alpine
+    container_name: library-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fanout_user
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: fanout_processor
+    command: -c max_connections=200 -c log_statement=all
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fanout_user -d fanout_processor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  kafka-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
