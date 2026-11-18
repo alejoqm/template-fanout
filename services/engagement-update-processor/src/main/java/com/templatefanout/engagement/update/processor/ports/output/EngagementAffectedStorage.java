@@ -10,7 +10,7 @@ public interface EngagementAffectedStorage {
 
     boolean isAlreadyProcessed(String eventId);
 
-    List<EngagementUpdateTask> readTasks(List<String> firmIds, String templateId);
+    List<EngagementUpdateTask> claimTasks(List<String> firmIds, String templateId);
 
     boolean recordEventIfAbsent(TemplatePublishEvent event);
 
