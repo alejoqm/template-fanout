@@ -2,6 +2,7 @@ package com.templatefanout.engagement.update.processor.application;
 
 import com.templatefanout.engagement.update.processor.domain.EngagementUpdateTask;
 import com.templatefanout.engagement.update.processor.domain.TemplatePublishEvent;
+import com.templatefanout.engagement.update.processor.domain.UpdateStatus;
 import com.templatefanout.engagement.update.processor.ports.output.EngagementAffectedStorage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +13,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Future;
@@ -23,6 +25,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 
 /**
  * Unit tests for {@link EngagementUpdateService}.
@@ -48,7 +51,7 @@ class EngagementUpdateServiceTest {
     void setUp() {
         // Create service with mocked storage
         // Note: max-concurrency=100 for tests, load-timeout=60s
-        service = new EngagementUpdateService(storage, 100, 60);
+        service = new EngagementUpdateService(storage, 100, 60, true, 10);
     }
 
     @Test
@@ -141,6 +144,8 @@ class EngagementUpdateServiceTest {
     @Test
     @DisplayName("Dispatches tasks when pending engagements exist")
     void startFanOut_hasTasks_submitsToExecutor() throws InterruptedException {
+        service = new EngagementUpdateService(storage, 100, 60, true, 0);
+
         // Given
         TemplatePublishEvent event = new TemplatePublishEvent(
             "evt-001", "TPL-AUDIT-2024", "v5.2", List.of("FIRM-001", "FIRM-002")
@@ -162,13 +167,11 @@ class EngagementUpdateServiceTest {
         assertThat(result).isTrue();
         verify(storage, times(1)).claimTasks(event.affectedFirms(), event.templateId());
 
-        // Wait briefly for async submission
-        // This sleep is too long to validate Completed is called.
-        Thread.sleep(3100);
-
-        // 3 tasks should have been processed (each updates status to PROCESSING then COMPLETED)
-        verify(storage, times(3)).updateStatus(any(Long.class), eq(com.templatefanout.engagement.update.processor.domain.UpdateStatus.PROCESSING), eq(null));
-        verify(storage, times(3)).updateStatus(any(Long.class), eq(com.templatefanout.engagement.update.processor.domain.UpdateStatus.COMPLETED), eq(null));
+        await().atMost(Duration.ofSeconds(2))
+                .untilAsserted(() -> {
+                    verify(storage, times(3)).updateStatus(any(Long.class), eq(UpdateStatus.PROCESSING), eq(null));
+                    verify(storage, times(3)).updateStatus(any(Long.class), eq(UpdateStatus.COMPLETED), eq(null));
+                });
     }
 
     @Test
