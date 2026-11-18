@@ -31,14 +31,19 @@ public class EngagementUpdateService implements EngagementUpdateUseCase {
     private final Duration loadTimeout;
 
     private final EngagementAffectedStorage engagementAffectedStorage;
+    private final boolean simulationMode;
+    private final int simulatedLoadSeconds;
 
     public EngagementUpdateService(final EngagementAffectedStorage engagementAffectedStorage,
                                    @Value("${processor.max-concurrency:100}") int maxConcurrency,
-                                   @Value("${processor.load-timeout-seconds:90}") long loadTimeoutSeconds) {
+                                   @Value("${processor.load-timeout-seconds:90}") long loadTimeoutSeconds,
+                                   @Value("${processor.simulation-mode:false}") boolean simulationMode,
+                                   @Value("${processor.simulated-load-seconds:60}") int simulatedLoadSeconds) {
         this.engagementAffectedStorage = engagementAffectedStorage;
-
         this.downstreamPermits = new Semaphore(maxConcurrency, true);
         this.loadTimeout = Duration.ofSeconds(loadTimeoutSeconds);
+        this.simulationMode = simulationMode;
+        this.simulatedLoadSeconds = simulatedLoadSeconds;
     }
 
     @Override
@@ -56,13 +61,6 @@ public class EngagementUpdateService implements EngagementUpdateUseCase {
             return false;
         }
 
-        if (!recorded) {
-            // Lost the race — another consumer instance got there first.
-            LOGGER.debug("Event recorded concurrently by another consumer: eventId={}",
-                    templatePublishEvent.eventId());
-            return false;
-        }
-
         startFanOut(templatePublishEvent);
         return true;
     }
@@ -73,7 +71,7 @@ public class EngagementUpdateService implements EngagementUpdateUseCase {
         // Delegated to outbound port in the complete implementation.
 
         List<EngagementUpdateTask> tasks =
-                engagementAffectedStorage.readTasks(event.affectedFirms(), event.templateId());
+                engagementAffectedStorage.claimTasks(event.affectedFirms(), event.templateId());
 
         if (tasks.isEmpty()) {
             LOGGER.info("No pending engagements for template={} version={}",
@@ -118,7 +116,8 @@ public class EngagementUpdateService implements EngagementUpdateUseCase {
             // 2. Mark in-flight so operators and reconciliation can see it.
             engagementAffectedStorage.updateStatus(task.taskId(), UpdateStatus.PROCESSING, null);
 
-           Thread.sleep(ThreadLocalRandom.current().nextInt(1000, 3001));
+            simulateDownstreamLoad();
+
             engagementAffectedStorage.updateStatus(task.taskId(), UpdateStatus.COMPLETED, null);
         } catch (InterruptedException e) {
             // Shutdown or cancellation: restore the flag, leave the row PENDING so
@@ -139,6 +138,21 @@ public class EngagementUpdateService implements EngagementUpdateUseCase {
                 downstreamPermits.release();
             }
         }
+    }
+
+    /**
+     * Simulates the downstream engagement load when running in simulation mode.
+     *
+     * The real implementation will call the downstream loader port and apply
+     * {@code loadTimeout} as the request timeout; it lives here isolated so the
+     * swap is a one-method change.
+     */
+    private void simulateDownstreamLoad() throws InterruptedException {
+        if (!simulationMode) {
+            // Real mode: no simulated latency. TODO: invoke loader port with loadTimeout.
+            return;
+        }
+        Thread.sleep(simulatedLoadSeconds * 1000L);
     }
 
     /**

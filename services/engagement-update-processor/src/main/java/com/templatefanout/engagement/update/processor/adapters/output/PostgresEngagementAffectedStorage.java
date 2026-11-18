@@ -8,6 +8,7 @@ import com.templatefanout.engagement.update.processor.domain.UpdateStatus;
 import com.templatefanout.engagement.update.processor.ports.output.EngagementAffectedStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -20,7 +21,9 @@ import java.util.List;
  *
  * Implements three distinct responsibilities:
  *  1. Idempotency: {@code isAlreadyProcessed} checks the processed_template_events table.
- *  2. Work retrieval: {@code readEngagementIds} queries the outbox_entries table.
+ *  2. Work acquisition: {@code claimTasks} atomically claims a batch of PENDING rows from
+ *     outbox_entries using FOR UPDATE SKIP LOCKED, so concurrent processor instances
+ *     never hand out the same task twice.
  *  3. State mutation: {@code updateStatus} advances outbox rows.
  *
  * All queries use explicit SQL (no ORM) for maximum control over locking,
@@ -33,7 +36,7 @@ public class PostgresEngagementAffectedStorage implements EngagementAffectedStor
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
-
+    private final int batchSize;
 
     /**
      * RowMapper for mapping outbox rows to EngagementUpdateTask records.
@@ -47,9 +50,12 @@ public class PostgresEngagementAffectedStorage implements EngagementAffectedStor
                     rs.getString("template_version")
             );
 
-    public PostgresEngagementAffectedStorage(final NamedParameterJdbcTemplate jdbc, final ObjectMapper objectMapper) {
+    public PostgresEngagementAffectedStorage(final NamedParameterJdbcTemplate jdbc,
+                                             final ObjectMapper objectMapper,
+                                             @Value("${processor.batch-size:1000}") final int batchSize) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+        this.batchSize = batchSize;
     }
 
     /**
@@ -73,31 +79,46 @@ public class PostgresEngagementAffectedStorage implements EngagementAffectedStor
     }
 
     /**
-     * Read engagement IDs for a given set of firms and template.
-     * This assumes the outbox has already been populated by the resolver.
+     * Atomically claim a batch of PENDING tasks for the given firms and template.
      *
-     * The query uses FOR UPDATE SKIP LOCKED to avoid blocking when multiple
-     * processor instances compete for the same batch.
+     * The inner SELECT locks the candidate rows (FOR UPDATE SKIP LOCKED) so that
+     * competing processor instances simply skip rows another instance is already
+     * claiming, then the outer UPDATE flips them to PROCESSING in the same
+     * statement. A task can therefore only ever be handed out to one instance.
+     *
+     * Batch size comes from {@code processor.batch-size} so long fan-outs drain
+     * in bounded chunks instead of one giant read.
      */
     @Override
-    public List<EngagementUpdateTask> readTasks(List<String> firmIds, String templateId) {
+    public List<EngagementUpdateTask> claimTasks(List<String> firmIds, String templateId) {
         String sql = """
-            SELECT task_id, engagement_id, firm_id, template_id, template_version
-              FROM outbox_entries
-             WHERE template_id = :templateId
-               AND firm_id IN (:firmIds)
-               AND status = 'PENDING'
-             ORDER BY created_at ASC
+            WITH claimed AS (
+                SELECT task_id
+                  FROM outbox_entries
+                 WHERE template_id = :templateId
+                   AND firm_id IN (:firmIds)
+                   AND status = 'PENDING'
+                 ORDER BY created_at ASC
+                 LIMIT :batchSize
+                 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE outbox_entries o
+               SET status = 'PROCESSING',
+                   updated_at = NOW()
+              FROM claimed c
+             WHERE o.task_id = c.task_id
+            RETURNING o.task_id, o.engagement_id, o.firm_id, o.template_id, o.template_version
             """;
 
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("templateId", templateId)
-                .addValue("firmIds", firmIds);
+                .addValue("firmIds", firmIds)
+                .addValue("batchSize", batchSize);
 
         List<EngagementUpdateTask> tasks = jdbc.query(sql, params, TASK_ROW_MAPPER);
 
         if (!tasks.isEmpty()) {
-            LOGGER.debug("Loaded {} pending tasks for template={} firms={}",
+            LOGGER.debug("Claimed {} tasks for template={} firms={}",
                     tasks.size(), templateId, firmIds.size());
         }
 
@@ -127,7 +148,7 @@ public class PostgresEngagementAffectedStorage implements EngagementAffectedStor
                 .addValue("eventId", event.eventId())
                 .addValue("templateId", event.templateId())
                 .addValue("version", event.version())
-                .addValue("affectedFirms", firmsJson);;
+                .addValue("affectedFirms", firmsJson);
 
         // update() returns the number of affected rows.
         // 1  => we inserted (we own the work)
@@ -168,25 +189,5 @@ public class PostgresEngagementAffectedStorage implements EngagementAffectedStor
         }
 
         LOGGER.debug("Updated task {} status to {}", taskId, status.name());
-    }
-
-    /**
-     * Additional helper: mark engagement as completed with summary artifact path.
-     * (Not in interface but likely needed)
-     */
-    public void markCompleted(long taskId, String summaryArtifactPath) {
-        String sql = """
-            UPDATE outbox_entries
-               SET status = 'COMPLETED',
-                   summary_artifact_path = :artifactPath,
-                   updated_at = NOW()
-             WHERE task_id = :taskId
-            """;
-
-        MapSqlParameterSource params = new MapSqlParameterSource()
-                .addValue("taskId", taskId)
-                .addValue("artifactPath", summaryArtifactPath);
-
-        jdbc.update(sql, params);
     }
 }

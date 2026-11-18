@@ -61,7 +61,7 @@ class EngagementUpdateServiceTest {
 
         when(storage.isAlreadyProcessed(event.eventId())).thenReturn(false);
         when(storage.recordEventIfAbsent(any(TemplatePublishEvent.class))).thenReturn(true);
-        when(storage.readTasks(eq(event.affectedFirms()), eq(event.templateId())))
+        when(storage.claimTasks(eq(event.affectedFirms()), eq(event.templateId())))
             .thenReturn(Collections.emptyList());
 
         // When
@@ -72,7 +72,7 @@ class EngagementUpdateServiceTest {
 
         verify(storage, times(1)).isAlreadyProcessed(event.eventId());
         verify(storage, times(1)).recordEventIfAbsent(eventCaptor.capture());
-        verify(storage, times(1)).readTasks(event.affectedFirms(), event.templateId());
+        verify(storage, times(1)).claimTasks(event.affectedFirms(), event.templateId());
         verify(storage, never()).updateStatus(any(), any(), any());
     }
 
@@ -93,7 +93,7 @@ class EngagementUpdateServiceTest {
         assertThat(result).isFalse();
 
         verify(storage, never()).recordEventIfAbsent(any());
-        verify(storage, never()).readTasks(any(), any());
+        verify(storage, never()).claimTasks(any(), any());
     }
 
     @Test
@@ -115,7 +115,7 @@ class EngagementUpdateServiceTest {
 
         verify(storage, times(1)).isAlreadyProcessed(event.eventId());
         verify(storage, times(1)).recordEventIfAbsent(any());
-        verify(storage, never()).readTasks(any(), any());
+        verify(storage, never()).claimTasks(any(), any());
     }
 
     @Test
@@ -127,7 +127,7 @@ class EngagementUpdateServiceTest {
         );
 
         when(storage.recordEventIfAbsent(any())).thenReturn(true);
-        when(storage.readTasks(event.affectedFirms(), event.templateId()))
+        when(storage.claimTasks(event.affectedFirms(), event.templateId()))
             .thenReturn(Collections.emptyList());
 
         // When
@@ -135,7 +135,7 @@ class EngagementUpdateServiceTest {
 
         // Then
         assertThat(result).isTrue();
-        verify(storage, times(1)).readTasks(event.affectedFirms(), event.templateId());
+        verify(storage, times(1)).claimTasks(event.affectedFirms(), event.templateId());
     }
 
     @Test
@@ -153,14 +153,14 @@ class EngagementUpdateServiceTest {
         );
 
         when(storage.recordEventIfAbsent(any())).thenReturn(true);
-        when(storage.readTasks(event.affectedFirms(), event.templateId())).thenReturn(tasks);
+        when(storage.claimTasks(event.affectedFirms(), event.templateId())).thenReturn(tasks);
 
         // When
         boolean result = service.handleTemplatePublishEvent(event);
 
         // Then
         assertThat(result).isTrue();
-        verify(storage, times(1)).readTasks(event.affectedFirms(), event.templateId());
+        verify(storage, times(1)).claimTasks(event.affectedFirms(), event.templateId());
 
         // Wait briefly for async submission
         // This sleep is too long to validate Completed is called.
@@ -181,7 +181,7 @@ class EngagementUpdateServiceTest {
 
         when(storage.isAlreadyProcessed(event.eventId())).thenReturn(false);
         when(storage.recordEventIfAbsent(any(TemplatePublishEvent.class))).thenReturn(true);
-        when(storage.readTasks(any(), any())).thenReturn(Collections.emptyList());
+        when(storage.claimTasks(any(), any())).thenReturn(Collections.emptyList());
 
         // When
         service.handleTemplatePublishEvent(event);

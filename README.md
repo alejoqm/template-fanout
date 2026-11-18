@@ -70,7 +70,7 @@ This system solves:
 | **Semaphore Backpressure** | Bounds concurrent calls to downstream loader with limited capacity |
 | **`FOR UPDATE SKIP LOCKED`** | Multiple processor instances can work without blocking |
 | **Idempotent Inserts** | `ON CONFLICT DO NOTHING` handles duplicate Kafka events |
-| **Partial Indexes** | `WHERE status = 'PENDING'` keeps indexes small and fast |
+| **Composite Index** | `(status, created_at)` keeps the pending-work lookup fast |
 
 ## Getting Started
 
@@ -85,7 +85,7 @@ This system solves:
 
 ```bash
 # 1. Start infrastructure
-cd local
+cd infrastructure/local
 docker compose up -d
 
 # 2. Wait for services to be healthy
@@ -113,9 +113,10 @@ docker compose logs -f engagement-update-processor
 
 ```
 template-fanout/
-├── local/
-│   ├── docker-compose.yaml          # Kafka + PostgreSQL
-│   └── README.md                     # Local environment setup
+├── infrastructure/
+│   └── local/
+│       ├── docker-compose.yaml      # Kafka + PostgreSQL
+│       └── README.md                # Local environment setup
 ├── services/
 │   ├── engagement-update-processor/  # Core worker service-migrations flyway are here (for future versions we need to move that because could be shared for different components).
 │   ├── affected-engagement-resolver/ # Regional fan-out
@@ -142,7 +143,7 @@ mvn test -Dtest=EngagementUpdateServiceTest
 Requires Kafka + PostgreSQL running:
 
 ```bash
-cd local
+cd infrastructure/local
 docker compose up -d
 
 cd ../services/engagement-update-processor
@@ -190,7 +191,9 @@ processor.load-timeout-seconds=90
 
 ### Simulation Mode
 
-as I am simulating Engagement response and summary response I add a Thread sleep in this part.
+In simulation mode the processor simulates the downstream engagement load with a delay of
+`processor.simulated-load-seconds` per engagement instead of calling the real loader.
+Enable it with `--processor.simulation-mode=true`.
 
 ## Troubleshooting
 
@@ -218,9 +221,8 @@ docker compose restart kafka
 psql -h localhost -U fanout_user -d fanout_processor -c \
   "SELECT version, description, installed_on FROM flyway_schema_history ORDER BY installed_on DESC;"
 
-# Roll back one migration
-docker exec -it library-postgres psql -U fanout_user -d fanout_processor -c \
-  "DELETE FROM flyway_schema_history WHERE version = '3'; DROP TABLE IF EXISTS outbox_entries CASCADE;"
+# Prefer fix-forward: add a V<n+1> repair migration instead of editing history.
+# Only delete rows from flyway_schema_history on a throwaway dev database.
 ```
 
 ## Design Decisions
@@ -228,7 +230,7 @@ docker exec -it library-postgres psql -U fanout_user -d fanout_processor -c \
 - Virtual threads vs platform threads
 - Semaphore vs synchronized for backpressure
 - `FOR UPDATE SKIP LOCKED` for concurrent processing
-- Partial indexes for pending-only queries
+- Composite index on (status, created_at) for pending-work queries
 - JSONB vs relational storage for `affected_firms`
 - Idempotency patterns (event ID vs optimistic locking)
 
